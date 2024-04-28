@@ -1,0 +1,8 @@
+models/
+target/
+.github/
+.dockerignore
+.gitattributes
+.gitignore
+docker-compose.yml
+Dockerfile

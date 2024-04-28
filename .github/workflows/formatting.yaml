@@ -1,0 +1,13 @@
+name: formatting
+on: [push, pull_request]
+
+jobs:
+  rustfmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run rustfmt
+        run: cargo fmt --check

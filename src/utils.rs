@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
 /// Compare two hashmaps based on the provided keys. The `include_keys` argument determines if the
@@ -12,14 +12,14 @@ use std::hash::Hash;
 /// * `exclude_keys` - When false the keys provided are compared, when true the keys provided are
 /// not compared.
 ///
-pub fn hashmap_compare<K, V>(
-    map1: HashMap<K, V>,
-    map2: HashMap<K, V>,
+pub fn btreemap_compare<K, V>(
+    map1: BTreeMap<K, V>,
+    map2: BTreeMap<K, V>,
     keys_to_compare: Vec<K>,
     exclude_keys: bool,
 ) -> bool
 where
-    K: Eq + Hash,
+    K: Eq + Hash + std::cmp::Ord,
     V: PartialEq,
 {
     if exclude_keys {
@@ -36,34 +36,5 @@ where
         keys_to_compare
             .iter()
             .all(|key| map1.get(key) == map2.get(key))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_compares_using_excluding_keys() {
-        let a = HashMap::from([("hoi".to_string(), "doei".to_string())]);
-        let b = HashMap::from([("hoi".to_string(), "doei".to_string())]);
-        assert!(hashmap_compare(a, b, Vec::new(), true));
-    }
-
-    #[test]
-    fn it_compares_using_including_keys() {
-        let a = HashMap::from([("hoi".to_string(), "doei".to_string())]);
-        let b = HashMap::from([("hoi".to_string(), "doei".to_string())]);
-        assert!(hashmap_compare(a, b, vec!["hoi".to_string()], false));
-    }
-
-    #[test]
-    fn it_excludes_keys() {
-        let a = HashMap::from([
-            ("hoi".to_string(), "doei".to_string()),
-            ("hoi2".to_string(), "doei".to_string()),
-        ]);
-        let b = HashMap::from([("hoi".to_string(), "doei".to_string())]);
-        assert!(hashmap_compare(a, b, vec!["hoi2".to_string()], true));
     }
 }

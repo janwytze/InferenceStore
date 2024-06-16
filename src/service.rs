@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tonic::codegen::tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::tokio_stream::StreamExt;
 use tonic::transport::Channel;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::inference_store::ProcessedInputOutputVecExt;
+use crate::inference_store::InferenceStore;
 use inference_protocol::grpc_inference_service_client::GrpcInferenceServiceClient;
 use inference_protocol::grpc_inference_service_server::GrpcInferenceService;
 use inference_protocol::{
@@ -14,7 +14,7 @@ use inference_protocol::{
     ModelReadyRequest, ModelReadyResponse, ServerLiveRequest, ServerLiveResponse,
     ServerMetadataRequest, ServerMetadataResponse, ServerReadyRequest, ServerReadyResponse,
 };
-use log::warn;
+use log::{debug, warn};
 
 use crate::input_parsing::ProcessedInput;
 use crate::output_parsing::ProcessedOutput;
@@ -39,18 +39,19 @@ pub mod inference_protocol {
 pub struct MockGrpcInferenceService {
     settings: Settings,
     inference_service_client: GrpcInferenceServiceClient<Channel>,
-    inference_store: Arc<RwLock<Vec<(ProcessedInput, ProcessedOutput)>>>,
+    inference_store: Arc<InferenceStore>,
 }
 
 impl MockGrpcInferenceService {
     pub fn new(
         settings: Settings,
+        inference_store: InferenceStore,
         inference_service_client: GrpcInferenceServiceClient<Channel>,
     ) -> Self {
         Self {
+            inference_store: Arc::new(inference_store),
             settings,
             inference_service_client,
-            inference_store: Arc::new(RwLock::new(vec![])),
         }
     }
 }
@@ -107,19 +108,14 @@ impl GrpcInferenceService for MockGrpcInferenceService {
     ) -> Result<Response<ModelInferResponse>, Status> {
         let parsed_input = ProcessedInput::from_infer_request(request.get_ref().clone());
 
-        // Scope for read lock.
+        if let Some(cached_output) = self
+            .inference_store
+            .find_output(&parsed_input, Default::default())
+            .await
         {
-            let readable_inference_store = self.inference_store.read().await;
-
-            if let Some(cached_output) =
-                readable_inference_store.find_output(&parsed_input, Default::default())
-            {
-                let response = cached_output.to_response(request.get_ref().clone());
-                return Ok(Response::new(response));
-            }
+            let response = cached_output.to_response(request.get_ref().clone());
+            return Ok(Response::new(response));
         }
-
-        // let json_string = serde_json::to_string(&parsed_input);
 
         let response = self
             .inference_service_client
@@ -129,10 +125,12 @@ impl GrpcInferenceService for MockGrpcInferenceService {
 
         let processed_response = ProcessedOutput::from_response(response.get_ref());
 
-        // Scope for write lock.
+        if let Err(err) = self
+            .inference_store
+            .write(parsed_input, processed_response)
+            .await
         {
-            let writable_inference_store = &mut self.inference_store.write().await;
-            writable_inference_store.push((parsed_input, processed_response));
+            return Err(Status::unknown(err.to_string()));
         }
 
         Ok(Response::new(response.into_inner()))
@@ -144,6 +142,8 @@ impl GrpcInferenceService for MockGrpcInferenceService {
         &self,
         request: Request<Streaming<ModelInferRequest>>,
     ) -> Result<Response<Self::ModelStreamInferStream>, Status> {
+        debug!("Received model_stream_infer request");
+
         let mut stream = request.into_inner();
         let (tx, rx) = mpsc::channel(4);
 
@@ -155,7 +155,7 @@ impl GrpcInferenceService for MockGrpcInferenceService {
                 let infer_request = match infer_request {
                     Ok(infer_request) => infer_request,
                     Err(err) => {
-                        //
+                        debug!("Error receiving request from stream: {err}");
                         let _ = tx
                             .send(Ok(ModelStreamInferResponse {
                                 error_message: err.to_string(),
@@ -167,20 +167,20 @@ impl GrpcInferenceService for MockGrpcInferenceService {
                 };
                 let parsed_input = ProcessedInput::from_infer_request(infer_request.clone());
 
-                // Scope for read lock.
+                if let Some(cached_output) = inference_store
+                    .find_output(&parsed_input, Default::default())
+                    .await
                 {
-                    let readable_inference_store = inference_store.read().await;
+                    debug!("Found input in cache, return the cached output");
 
-                    if let Some(cached_output) =
-                        readable_inference_store.find_output(&parsed_input, Default::default())
-                    {
-                        let response = cached_output.to_stream_response(infer_request);
-                        if let Err(err) = tx.send(Ok(response)).await {
-                            warn!("sending cached response failed: {err}")
-                        }
-                        return;
+                    let response = cached_output.to_stream_response(infer_request);
+                    if let Err(err) = tx.send(Ok(response)).await {
+                        warn!("sending cached response failed: {err}")
                     }
+                    return;
                 }
+
+                debug!("Input not found in cache, calling the target grpc server");
 
                 let response = inference_service_client
                     .clone()
@@ -190,6 +190,7 @@ impl GrpcInferenceService for MockGrpcInferenceService {
                 let response = match response {
                     Ok(response) => response,
                     Err(err) => {
+                        debug!("Target GRPC server returned error: {err}");
                         if let Err(err) = tx
                             .send(Ok(ModelStreamInferResponse {
                                 error_message: err.to_string(),
@@ -205,10 +206,19 @@ impl GrpcInferenceService for MockGrpcInferenceService {
 
                 let processed_response = ProcessedOutput::from_response(response.get_ref());
 
-                // Scope for write lock.
+                debug!("Writing target GRPC server response to disk");
+
+                if let Err(err) = inference_store
+                    .write(parsed_input, processed_response)
+                    .await
                 {
-                    let writable_inference_store = &mut inference_store.write().await;
-                    writable_inference_store.push((parsed_input, processed_response));
+                    let _ = tx
+                        .send(Ok(ModelStreamInferResponse {
+                            error_message: format!("{err}"),
+                            infer_response: None,
+                        }))
+                        .await;
+                    return;
                 }
 
                 if let Err(err) = tx
@@ -230,13 +240,15 @@ impl GrpcInferenceService for MockGrpcInferenceService {
         &self,
         request: Request<ModelConfigRequest>,
     ) -> Result<Response<ModelConfigResponse>, Status> {
-        let response = self
+        match self
             .inference_service_client
             .clone()
             .model_config(request)
             .await
-            .expect("ohnee");
-        Ok(Response::new(response.into_inner()))
+        {
+            Ok(res) => Ok(Response::new(res.into_inner())),
+            Err(err) => Err(Status::unknown(err.to_string())),
+        }
     }
 
     async fn model_statistics(

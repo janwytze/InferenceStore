@@ -1,38 +1,46 @@
-use std::collections::HashMap;
+use blake2::{Blake2b, Blake2s256, Digest};
+use digest::consts::U8;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde_with::serde_as;
+
+use serde_with::base64::Base64;
 
 use crate::service::inference_protocol::infer_parameter::ParameterChoice;
 use crate::service::inference_protocol::model_infer_request::{
     InferInputTensor, InferRequestedOutputTensor,
 };
 use crate::service::inference_protocol::{InferParameter, ModelInferRequest};
-use crate::utils::hashmap_compare;
+use crate::utils::btreemap_compare;
+
+type Blake2b64 = Blake2b<U8>;
 
 // Represents a parsed form of ModelInferRequest that is less heavy to process as the full request.
 // It basically contains the same information, but the content has been hashed to reduce the size.
-#[derive(Serialize, Deserialize, Clone)]
+#[serde_as]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct ProcessedInput {
-    model_name: String,
-    model_version: String,
-    id: String,
-    parameters: HashMap<String, Option<Parameter>>,
-    inputs: Vec<Input>,
-    outputs: Vec<Output>,
-    hash: String,
+    pub model_name: String,
+    pub model_version: String,
+    pub id: String,
+    pub parameters: BTreeMap<String, Option<Parameter>>,
+    pub inputs: Vec<Input>,
+    pub outputs: Vec<Output>,
+    #[serde_as(as = "Base64")]
+    pub content_hash: [u8; 32],
 }
 
 #[derive(Clone)]
 pub struct MatchConfig {
-    match_id: bool,
-    parameter_keys: Vec<String>,
-    exclude_parameters: bool,
-    input_parameter_keys: HashMap<String, Vec<String>>,
-    exclude_input_parameters: bool,
-    output_parameter_keys: HashMap<String, Vec<String>>,
-    exclude_output_parameters: bool,
-    match_pruned_output: bool,
+    pub match_id: bool,
+    pub parameter_keys: Vec<String>,
+    pub exclude_parameters: bool,
+    pub input_parameter_keys: HashMap<String, Vec<String>>,
+    pub exclude_input_parameters: bool,
+    pub output_parameter_keys: HashMap<String, Vec<String>>,
+    pub exclude_output_parameters: bool,
+    pub match_pruned_output: bool,
 }
 
 impl Default for MatchConfig {
@@ -53,14 +61,15 @@ impl Default for MatchConfig {
 impl ProcessedInput {
     /// Parse a ModelInfer request in a format that makes matching it with future requests easier.
     pub fn from_infer_request(req: ModelInferRequest) -> ProcessedInput {
-        let mut hasher = Sha256::new();
+        let mut hasher = Blake2s256::new();
 
         // TODO parse inputs if there are not raw_input_contents.
         for content in req.raw_input_contents {
             Digest::update(&mut hasher, content);
         }
 
-        let hash = format!("{:#01x}", hasher.finalize());
+        let hash = hasher.finalize();
+        let hash: &[u8; 32] = hash.as_slice().try_into().unwrap();
 
         return ProcessedInput {
             model_name: req.model_name,
@@ -112,7 +121,7 @@ impl ProcessedInput {
                         .collect(),
                 })
                 .collect(),
-            hash,
+            content_hash: *hash,
         };
     }
 
@@ -125,7 +134,7 @@ impl ProcessedInput {
     pub fn matches(&self, other_input: &ProcessedInput, config: MatchConfig) -> bool {
         if self.model_name != other_input.model_name
             || self.model_version != other_input.model_version
-            || self.hash != other_input.hash
+            || self.content_hash != other_input.content_hash
         {
             return false;
         }
@@ -134,7 +143,7 @@ impl ProcessedInput {
             return false;
         }
 
-        if !hashmap_compare(
+        if !btreemap_compare(
             self.parameters.clone(),
             other_input.parameters.clone(),
             config.parameter_keys,
@@ -164,7 +173,7 @@ impl ProcessedInput {
                     return false;
                 }
 
-                if !hashmap_compare(
+                if !btreemap_compare(
                     self_value.parameters,
                     other_value.parameters.clone(),
                     config
@@ -200,7 +209,7 @@ impl ProcessedInput {
                     return false;
                 }
 
-                if !hashmap_compare(
+                if !btreemap_compare(
                     self_value.parameters,
                     other_value.parameters.clone(),
                     config
@@ -220,23 +229,96 @@ impl ProcessedInput {
 
         return true;
     }
+
+    // Produces a hash based on the model that's used, and the inputs.
+    // This has makes it easy to match requests with the same input.
+    pub fn inputs_hash(&self) -> [u8; 8] {
+        let mut hasher = Blake2b64::new();
+
+        Digest::update(&mut hasher, &self.model_name.as_bytes());
+        Digest::update(&mut hasher, &self.model_version.as_bytes());
+        Digest::update(&mut hasher, &self.content_hash);
+
+        for input in &self.inputs {
+            Digest::update(&mut hasher, &input.datatype.as_bytes());
+            Digest::update(&mut hasher, &input.name.as_bytes());
+
+            for shape in &input.shape {
+                Digest::update(&mut hasher, &shape.to_le_bytes());
+            }
+        }
+
+        let hash = hasher.finalize();
+        let hash: &[u8; 8] = hash.as_slice().try_into().unwrap();
+
+        return *hash;
+    }
+
+    pub fn outputs_hash(&self) -> [u8; 8] {
+        let mut hasher = Blake2b64::new();
+
+        for output in &self.outputs {
+            Digest::update(&mut hasher, &output.name);
+        }
+
+        let hash = hasher.finalize();
+        let hash: &[u8; 8] = hash.as_slice().try_into().unwrap();
+
+        return *hash;
+    }
+
+    pub fn metadata_hash(&self) -> [u8; 8] {
+        let mut hasher = Blake2b64::new();
+
+        Digest::update(&mut hasher, &self.id.as_bytes());
+
+        for (key, value) in &self.parameters {
+            Digest::update(&mut hasher, &key.as_bytes());
+            if value.is_some() {
+                Digest::update(&mut hasher, value.as_ref().unwrap().as_bytes());
+            }
+        }
+
+        for input in &self.inputs {
+            for (key, value) in &input.parameters {
+                Digest::update(&mut hasher, &key.as_bytes());
+                if value.is_some() {
+                    Digest::update(&mut hasher, value.as_ref().unwrap().as_bytes());
+                }
+            }
+        }
+
+        for output in &self.outputs {
+            for (key, value) in &output.parameters {
+                Digest::update(&mut hasher, &key.as_bytes());
+                if value.is_some() {
+                    Digest::update(&mut hasher, value.as_ref().unwrap().as_bytes());
+                }
+            }
+        }
+
+        let hash = hasher.finalize();
+        let hash: &[u8; 8] = hash.as_slice().try_into().unwrap();
+
+        return *hash;
+    }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Input {
-    name: String,
-    datatype: String,
-    shape: Vec<i64>,
-    parameters: HashMap<String, Option<Parameter>>,
+    pub name: String,
+    pub datatype: String,
+    pub shape: Vec<i64>,
+    pub parameters: BTreeMap<String, Option<Parameter>>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Output {
-    name: String,
-    parameters: HashMap<String, Option<Parameter>>,
+    pub name: String,
+    pub parameters: BTreeMap<String, Option<Parameter>>,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(untagged)]
 pub enum Parameter {
     BoolParam(bool),
@@ -271,19 +353,42 @@ impl Parameter {
             },
         }
     }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let type_byte: u8 = match self {
+            Parameter::BoolParam(_) => 1,
+            Parameter::Int64Param(_) => 2,
+            Parameter::StringParam(_) => 3,
+            Parameter::DoubleParam(_) => 4,
+            Parameter::Uint64Param(_) => 5,
+        };
+
+        let value_bytes: Vec<u8> = match self {
+            Parameter::BoolParam(v) => vec![if *v { 1 } else { 0 }],
+            Parameter::Int64Param(v) => v.to_ne_bytes().to_vec(),
+            Parameter::StringParam(v) => v.as_bytes().to_vec(),
+            Parameter::DoubleParam(v) => v.to_ne_bytes().to_vec(),
+            Parameter::Uint64Param(v) => v.to_ne_bytes().to_vec(),
+        };
+
+        let mut res = vec![type_byte];
+        res.extend(value_bytes);
+
+        res
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use once_cell::sync::Lazy;
 
     use super::*;
 
-    static BASE_INPUT: Lazy<ProcessedInput> = Lazy::new(|| ProcessedInput {
+    pub static BASE_INPUT: Lazy<ProcessedInput> = Lazy::new(|| ProcessedInput {
         model_name: "test".to_string(),
         model_version: "1".to_string(),
         id: "1".to_string(),
-        parameters: HashMap::from([
+        parameters: BTreeMap::from([
             (
                 "param1".to_string(),
                 Some(Parameter::StringParam("param_value1".to_string())),
@@ -297,7 +402,7 @@ mod tests {
             name: "input1".to_string(),
             datatype: "INT64".to_string(),
             shape: vec![1, 2, 3],
-            parameters: HashMap::from([
+            parameters: BTreeMap::from([
                 (
                     "input_param1".to_string(),
                     Some(Parameter::StringParam("input_param_value1".to_string())),
@@ -310,7 +415,7 @@ mod tests {
         }],
         outputs: vec![Output {
             name: "output1".to_string(),
-            parameters: HashMap::from([
+            parameters: BTreeMap::from([
                 (
                     "output_param1".to_string(),
                     Some(Parameter::StringParam("output_param_value1".to_string())),
@@ -321,7 +426,11 @@ mod tests {
                 ),
             ]),
         }],
-        hash: "9ed1515819dec61fd361d5fdabb57f41ecce1a5fe1fe263b98c0d6943b9b232e".to_string(),
+        content_hash: (1..=32)
+            .map(|x| x as u8)
+            .collect::<Vec<u8>>()
+            .try_into()
+            .unwrap(),
     });
 
     #[test]
@@ -397,7 +506,7 @@ mod tests {
 
     #[test]
     fn it_not_matches_different_parameters() {
-        let mut input1 = BASE_INPUT.clone();
+        let input1 = BASE_INPUT.clone();
         let mut input2 = BASE_INPUT.clone();
 
         input2.parameters.insert(
@@ -457,7 +566,7 @@ mod tests {
 
     #[test]
     fn it_not_matches_different_input_parameters() {
-        let mut input1 = BASE_INPUT.clone();
+        let input1 = BASE_INPUT.clone();
         let mut input2 = BASE_INPUT.clone();
 
         input2.inputs[0].parameters.insert(
@@ -523,7 +632,7 @@ mod tests {
 
     #[test]
     fn it_not_matches_different_output_parameters() {
-        let mut input1 = BASE_INPUT.clone();
+        let input1 = BASE_INPUT.clone();
         let mut input2 = BASE_INPUT.clone();
 
         input2.outputs[0].parameters.insert(
@@ -589,7 +698,7 @@ mod tests {
 
     #[test]
     fn it_not_matches_different_input_name() {
-        let mut input1 = BASE_INPUT.clone();
+        let input1 = BASE_INPUT.clone();
         let mut input2 = BASE_INPUT.clone();
 
         input2.inputs[0].name = "asdf".to_string();
@@ -604,7 +713,7 @@ mod tests {
 
     #[test]
     fn it_not_matches_different_input_shape() {
-        let mut input1 = BASE_INPUT.clone();
+        let input1 = BASE_INPUT.clone();
         let mut input2 = BASE_INPUT.clone();
 
         input2.inputs[0].shape = vec![3, 2, 1];
@@ -619,7 +728,7 @@ mod tests {
 
     #[test]
     fn it_not_matches_different_input_datatype() {
-        let mut input1 = BASE_INPUT.clone();
+        let input1 = BASE_INPUT.clone();
         let mut input2 = BASE_INPUT.clone();
 
         input2.inputs[0].datatype = "FP32".to_string();
@@ -634,7 +743,7 @@ mod tests {
 
     #[test]
     fn it_not_matches_different_output_name() {
-        let mut input1 = BASE_INPUT.clone();
+        let input1 = BASE_INPUT.clone();
         let mut input2 = BASE_INPUT.clone();
 
         input2.outputs[0].name = "asdf".to_string();

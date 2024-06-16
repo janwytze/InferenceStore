@@ -1,7 +1,7 @@
 use config::{Config, ConfigError, Environment, File};
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[allow(unused)]
 pub enum ServerMode {
     #[serde(alias = "collect")]
@@ -11,20 +11,20 @@ pub enum ServerMode {
     Mock,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[allow(unused)]
 pub struct TargetServer {
     pub host: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[allow(unused)]
 pub struct Server {
     pub host: String,
     pub port: u16,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[allow(unused)]
 pub struct RequestMatching {
     /// Should ModelInfer requests be seen as a different request when the id is different?
@@ -40,13 +40,13 @@ pub struct RequestMatching {
     pub match_pruned_output: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[allow(unused)]
 pub struct RequestCollection {
     pub path: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[allow(unused)]
 pub struct Settings {
     pub debug: bool,
@@ -69,7 +69,7 @@ impl Settings {
             .set_default("request_matching.match_parameters", false)?
             .set_default("request_matching.skip_parameters", Vec::<String>::new())?
             .set_default("request_matching.match_pruned_output", false)?
-            .set_default("request_collection.path", "collection")
+            .set_default("request_collection.path", "inference_files")
             .unwrap()
             .add_source(File::with_name("config").required(false))
             .add_source(Environment::with_prefix("app"))

@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -12,23 +13,47 @@ use crate::input_parsing::{MatchConfig, ProcessedInput};
 use crate::output_parsing::ProcessedOutput;
 
 #[derive(Serialize, Deserialize)]
-pub struct InputOutput {
+pub struct InputWrapper {
+    pub input: ProcessedInput,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OutputWrapper {
+    pub output: ProcessedOutput,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct InputOutputWrapper {
     pub input: ProcessedInput,
     pub output: ProcessedOutput,
 }
 
-impl InputOutput {
-    pub fn new(input: ProcessedInput, output: ProcessedOutput) -> InputOutput {
-        InputOutput { input, output }
+impl InputOutputWrapper {
+    pub fn new(input: ProcessedInput, output: ProcessedOutput) -> InputOutputWrapper {
+        InputOutputWrapper { input, output }
+    }
+
+    pub fn hash(&self) -> [u8; 32] {
+        let mut hash: [u8; 32] = [0; 32];
+
+        hash[0..8].copy_from_slice(&self.input.inputs_hash());
+        hash[8..16].copy_from_slice(&self.input.outputs_hash());
+        hash[16..24].copy_from_slice(&self.input.metadata_hash());
+        hash[24..32].copy_from_slice(&self.output.hash());
+
+        hash
     }
 
     pub fn file_name(&self) -> String {
-        let inputs_hash = hex::encode(self.input.inputs_hash());
-        let outputs_hash = hex::encode(self.input.outputs_hash());
-        let metadata_hash = hex::encode(self.input.metadata_hash());
-        let result_hash = hex::encode(self.output.hash());
+        let hash = self.hash();
 
-        format!("{inputs_hash}_{outputs_hash}_{metadata_hash}_{result_hash}.inferstore")
+        format!(
+            "{}_{}_{}_{}.inferstore",
+            hex::encode(&hash[0..8]),
+            hex::encode(&hash[8..16]),
+            hex::encode(&hash[16..24]),
+            hex::encode(&hash[24..32]),
+        )
     }
 }
 
@@ -36,8 +61,8 @@ pub struct InferenceStore {
     // The path where requests/responses are stored on disk.
     path: PathBuf,
 
-    // The in-memory request/response store.
-    inference_store: RwLock<Vec<(ProcessedInput, ProcessedOutput)>>,
+    // The in-memory request store.
+    inference_store: RwLock<IndexMap<[u8; 32], ProcessedInput>>,
 }
 
 impl InferenceStore {
@@ -49,7 +74,7 @@ impl InferenceStore {
     }
     // Loads all inference files from the inference store path.
     pub fn get_inference_files(&self) -> io::Result<Vec<PathBuf>> {
-        let res = fs::read_dir(self.path.clone())?
+        let res = fs::read_dir(&self.path)?
             .filter_map(Result::ok)
             .filter(|entry| entry.path().extension() == Some(OsStr::new("inferstore")))
             .map(|r| r.path())
@@ -59,12 +84,23 @@ impl InferenceStore {
     }
 
     pub async fn load(&self, path: PathBuf) -> anyhow::Result<()> {
-        let file = File::open(path)?;
-        let InputOutput { input, output } = serde_json::from_reader(file)?;
+        let file = File::open(&path)?;
+        let InputWrapper { input } = serde_json::from_reader(file)?;
 
         let mut write_store = self.inference_store.write().await;
 
-        write_store.push((input, output));
+        let mut file_name = path
+            .file_name()
+            .unwrap()
+            .to_os_string()
+            .into_string()
+            .unwrap();
+        file_name.truncate(file_name.len() - 11);
+        file_name = file_name.replace("_", "");
+
+        let hash: [u8; 32] = hex::decode(file_name)?.as_slice().try_into()?;
+
+        write_store.insert(hash, input);
 
         Ok(())
     }
@@ -74,10 +110,10 @@ impl InferenceStore {
         input: ProcessedInput,
         output: ProcessedOutput,
     ) -> anyhow::Result<()> {
-        let input_output = InputOutput::new(input.clone(), output.clone());
+        let input_output = InputOutputWrapper::new(input.clone(), output.clone());
 
         // Create the file.
-        fs::create_dir_all(self.path.clone())?;
+        fs::create_dir_all(&self.path)?;
         let file = match File::create_new(self.path.join(input_output.file_name())) {
             Ok(file) => file,
             Err(err) => {
@@ -93,7 +129,7 @@ impl InferenceStore {
 
         // Write to memory.
         let write_inference_store = &mut self.inference_store.write().await;
-        write_inference_store.push((input, output));
+        write_inference_store.insert(input_output.hash(), input);
 
         Ok(())
     }
@@ -105,9 +141,19 @@ impl InferenceStore {
     ) -> Option<ProcessedOutput> {
         let readable_inference_store = self.inference_store.read().await;
 
-        for (input, output) in readable_inference_store.deref() {
+        for (hash, input) in readable_inference_store.deref() {
             if match_input.matches(input, config.clone()) {
-                return Some(output.clone());
+                let filename = format!(
+                    "{}_{}_{}_{}.inferstore",
+                    hex::encode(&hash[0..8]),
+                    hex::encode(&hash[8..16]),
+                    hex::encode(&hash[16..24]),
+                    hex::encode(&hash[24..32]),
+                );
+                let file = File::open(self.path.join(filename)).ok()?;
+                let OutputWrapper { output } = serde_json::from_reader(file).ok()?;
+
+                return Some(output);
             }
         }
 
@@ -164,13 +210,15 @@ mod tests {
         // ARRANGE
         let tmp_dir = TempDir::new("inference_store_test").unwrap();
 
-        let path = tmp_dir.path().join("1.inferstore");
+        let path = tmp_dir
+            .path()
+            .join("c9b7e475dd69fa72_bf645d11f6b25b6f_192d91107cec4716_111f49954e134b85.inferstore");
         let file = File::create(&path).unwrap();
 
         let mut writer = BufWriter::new(file);
         serde_json::to_writer(
             &mut writer,
-            &InputOutput::new(BASE_INPUT.clone(), BASE_OUTPUT.clone()),
+            &InputOutputWrapper::new(BASE_INPUT.clone(), BASE_OUTPUT.clone()),
         )
         .unwrap();
         writer.flush().unwrap();
@@ -189,9 +237,8 @@ mod tests {
         // ASSERT
         let read_inference_store = inference_store.inference_store.read().await;
         assert_eq!(read_inference_store.len(), 1);
-        let (input, output) = read_inference_store.first().unwrap();
+        let (_, input) = read_inference_store.first().unwrap();
         assert_eq!(*input, BASE_INPUT.clone());
-        assert_eq!(*output, BASE_OUTPUT.clone());
     }
 
     #[tokio::test]

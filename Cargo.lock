@@ -765,6 +765,7 @@ dependencies = [
  "digest",
  "env_logger",
  "hex",
+ "indexmap 2.2.6",
  "log",
  "once_cell",
  "prost",

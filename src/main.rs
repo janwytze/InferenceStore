@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.target_server.host.clone()
     );
 
-    let inference_store_path = PathBuf::from(settings.request_collection.path.clone());
+    let inference_store_path = PathBuf::from(&settings.request_collection.path);
     let inference_store = InferenceStore::new(inference_store_path.clone());
 
     let inference_files = match inference_store.get_inference_files() {

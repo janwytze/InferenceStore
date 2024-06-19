@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
 
 /// Compare two hashmaps based on the provided keys. The `include_keys` argument determines if the
@@ -19,17 +19,18 @@ pub fn btreemap_compare<K, V>(
     exclude_keys: bool,
 ) -> bool
 where
-    K: Eq + Hash + std::cmp::Ord,
+    K: Eq + Hash + Ord,
     V: PartialEq,
 {
     if exclude_keys {
-        let map1_filtered: HashMap<_, _> = map1
+        let keys_to_compare_set: HashSet<_> = keys_to_compare.iter().collect();
+        let map1_filtered: BTreeMap<_, _> = map1
             .iter()
-            .filter(|(key, _)| !keys_to_compare.contains(key))
+            .filter(|(key, _)| !keys_to_compare_set.contains(key))
             .collect();
-        let map2_filtered: HashMap<_, _> = map2
+        let map2_filtered: BTreeMap<_, _> = map2
             .iter()
-            .filter(|(key, _)| !keys_to_compare.contains(key))
+            .filter(|(key, _)| !keys_to_compare_set.contains(key))
             .collect();
         map1_filtered == map2_filtered
     } else {

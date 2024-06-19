@@ -3,7 +3,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use serde::{Deserialize, Serialize};
@@ -68,7 +68,7 @@ pub struct InferenceStore {
 impl InferenceStore {
     pub fn new(path: PathBuf) -> InferenceStore {
         InferenceStore {
-            path: path,
+            path,
             inference_store: Default::default(),
         }
     }
@@ -177,20 +177,18 @@ mod tests {
     fn it_reads_inference_files() {
         // ARRANGE
         let tmp_dir = TempDir::new("inference_store_test").unwrap();
+        let tmp_path = tmp_dir.path().to_path_buf();
 
-        File::create(tmp_dir.path().join("1.inferstore")).unwrap();
-        File::create(tmp_dir.path().join("2.test")).unwrap();
-
-        let tmp_path = tmp_dir.into_path();
+        File::create(tmp_path.join("1.inferstore")).unwrap();
+        File::create(tmp_path.join("2.test")).unwrap();
 
         let inference_store = InferenceStore {
-            path: tmp_path.clone(),
+            path: tmp_path,
             inference_store: Default::default(),
         };
 
         // ACT
         let files = inference_store.get_inference_files().unwrap();
-        fs::remove_dir_all(tmp_path).unwrap();
 
         // ASSERT
         assert_eq!(files.len(), 1);
@@ -209,9 +207,9 @@ mod tests {
     async fn it_loads_inference_file() {
         // ARRANGE
         let tmp_dir = TempDir::new("inference_store_test").unwrap();
+        let tmp_path = tmp_dir.path().to_path_buf();
 
-        let path = tmp_dir
-            .path()
+        let path = tmp_path
             .join("c9b7e475dd69fa72_bf645d11f6b25b6f_192d91107cec4716_111f49954e134b85.inferstore");
         let file = File::create(&path).unwrap();
 
@@ -223,16 +221,13 @@ mod tests {
         .unwrap();
         writer.flush().unwrap();
 
-        let tmp_path = tmp_dir.into_path();
-
         let inference_store = InferenceStore {
-            path: tmp_path.clone(),
+            path: tmp_path,
             inference_store: Default::default(),
         };
 
         // ACT
         inference_store.load(path).await.unwrap();
-        fs::remove_dir_all(tmp_path).unwrap();
 
         // ASSERT
         let read_inference_store = inference_store.inference_store.read().await;
@@ -245,7 +240,8 @@ mod tests {
     async fn it_writes_inference_file() {
         // ARRANGE
         let tmp_dir = TempDir::new("inference_store_test").unwrap();
-        let tmp_path = tmp_dir.into_path();
+        let tmp_path = tmp_dir.path().to_path_buf();
+
         let inference_store = InferenceStore {
             path: tmp_path.clone(),
             inference_store: Default::default(),
@@ -261,14 +257,14 @@ mod tests {
         assert!(tmp_path
             .join("c9b7e475dd69fa72_bf645d11f6b25b6f_192d91107cec4716_111f49954e134b85.inferstore")
             .exists());
-        fs::remove_dir_all(tmp_path).unwrap();
     }
 
     #[tokio::test]
     async fn it_does_not_write_when_exists() {
         // ARRANGE
         let tmp_dir = TempDir::new("inference_store_test").unwrap();
-        let tmp_path = tmp_dir.into_path();
+        let tmp_path = tmp_dir.path().to_path_buf();
+
         let inference_store = InferenceStore {
             path: tmp_path.clone(),
             inference_store: Default::default(),
@@ -286,9 +282,7 @@ mod tests {
 
         // ASSERT
         assert!(tmp_path
-            .clone()
             .join("c9b7e475dd69fa72_bf645d11f6b25b6f_192d91107cec4716_111f49954e134b85.inferstore")
             .exists());
-        fs::remove_dir_all(tmp_path).unwrap();
     }
 }

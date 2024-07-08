@@ -1,4 +1,4 @@
-FROM rust:1-alpine3.19 as build
+FROM rust:1-alpine3.19 AS build
 
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 RUN apk add --no-cache musl-dev protoc
@@ -14,6 +14,8 @@ FROM alpine:3.19
 
 RUN apk add --no-cache libgcc
 
+WORKDIR /app
+
 COPY --from=build /app/inference-store .
 
-ENTRYPOINT ["/inference-store"]
+ENTRYPOINT ["/app/inference-store"]

@@ -1,0 +1,26 @@
+debug: false
+
+mode: collect
+
+target_server:
+  host: http://localhost:8001
+
+request_matching:
+  match_id: false
+
+  parameter_matching: disable
+
+  parameter_keys: []
+
+  input_parameter_matching: disable
+
+  input_parameter_keys: {}
+
+  output_parameter_matching: disable
+
+  output_parameter_keys: {}
+
+  match_pruned_output: false
+
+request_collection:
+  path: inferencestore

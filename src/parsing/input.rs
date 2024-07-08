@@ -384,7 +384,7 @@ pub mod tests {
 
     use super::*;
 
-    pub static BASE_INPUT: Lazy<ProcessedInput> = Lazy::new(|| ProcessedInput {
+    pub static BASE_INFER_INPUT: Lazy<ProcessedInput> = Lazy::new(|| ProcessedInput {
         model_name: "test".to_string(),
         model_version: "1".to_string(),
         id: "1".to_string(),
@@ -478,16 +478,16 @@ pub mod tests {
 
     #[test]
     fn it_matches_equal_inputs() {
-        let input1 = BASE_INPUT.clone();
-        let input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let input2 = BASE_INFER_INPUT.clone();
 
         assert!(input1.matches(&input2, Default::default()));
     }
 
     #[test]
     fn it_not_matches_different_model_name() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.model_name = "hoi".to_string();
 
@@ -496,8 +496,8 @@ pub mod tests {
 
     #[test]
     fn it_not_matches_different_model_version() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.model_version = "19".to_string();
 
@@ -506,8 +506,8 @@ pub mod tests {
 
     #[test]
     fn it_not_matches_different_parameters() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.parameters.insert(
             "test".to_string(),
@@ -519,8 +519,8 @@ pub mod tests {
 
     #[test]
     fn it_excludes_provided_parameters() {
-        let mut input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let mut input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input1.parameters.insert(
             "ignore_me".to_string(),
@@ -542,8 +542,8 @@ pub mod tests {
 
     #[test]
     fn it_includes_provided_parameters() {
-        let mut input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let mut input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input1.parameters.insert(
             "ignore_me".to_string(),
@@ -566,8 +566,8 @@ pub mod tests {
 
     #[test]
     fn it_not_matches_different_input_parameters() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.inputs[0].parameters.insert(
             "test".to_string(),
@@ -579,8 +579,8 @@ pub mod tests {
 
     #[test]
     fn it_excludes_provided_input_parameters() {
-        let mut input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let mut input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input1.inputs[0].parameters.insert(
             "ignore_me".to_string(),
@@ -605,8 +605,8 @@ pub mod tests {
 
     #[test]
     fn it_includes_provided_input_parameters() {
-        let mut input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let mut input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input1.inputs[0].parameters.insert(
             "ignore_me".to_string(),
@@ -632,8 +632,8 @@ pub mod tests {
 
     #[test]
     fn it_not_matches_different_output_parameters() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.outputs[0].parameters.insert(
             "test".to_string(),
@@ -645,8 +645,8 @@ pub mod tests {
 
     #[test]
     fn it_excludes_provided_output_parameters() {
-        let mut input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let mut input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input1.outputs[0].parameters.insert(
             "ignore_me".to_string(),
@@ -671,8 +671,8 @@ pub mod tests {
 
     #[test]
     fn it_includes_provided_output_parameters() {
-        let mut input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let mut input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input1.outputs[0].parameters.insert(
             "ignore_me".to_string(),
@@ -698,8 +698,8 @@ pub mod tests {
 
     #[test]
     fn it_not_matches_different_input_name() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.inputs[0].name = "asdf".to_string();
 
@@ -713,8 +713,8 @@ pub mod tests {
 
     #[test]
     fn it_not_matches_different_input_shape() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.inputs[0].shape = vec![3, 2, 1];
 
@@ -728,8 +728,8 @@ pub mod tests {
 
     #[test]
     fn it_not_matches_different_input_datatype() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.inputs[0].datatype = "FP32".to_string();
 
@@ -743,8 +743,8 @@ pub mod tests {
 
     #[test]
     fn it_not_matches_different_output_name() {
-        let input1 = BASE_INPUT.clone();
-        let mut input2 = BASE_INPUT.clone();
+        let input1 = BASE_INFER_INPUT.clone();
+        let mut input2 = BASE_INFER_INPUT.clone();
 
         input2.outputs[0].name = "asdf".to_string();
 

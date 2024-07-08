@@ -6,18 +6,11 @@ use tonic::codegen::tokio_stream::StreamExt;
 use tonic::transport::Channel;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::inference_store::InferenceStore;
-use inference_protocol::grpc_inference_service_client::GrpcInferenceServiceClient;
-use inference_protocol::grpc_inference_service_server::GrpcInferenceService;
-use inference_protocol::{
-    ModelInferRequest, ModelInferResponse, ModelMetadataRequest, ModelMetadataResponse,
-    ModelReadyRequest, ModelReadyResponse, ServerLiveRequest, ServerLiveResponse,
-    ServerMetadataRequest, ServerMetadataResponse, ServerReadyRequest, ServerReadyResponse,
-};
-use log::{debug, warn};
-
-use crate::input_parsing::ProcessedInput;
-use crate::output_parsing::ProcessedOutput;
+use crate::caching::cachable_modelconfig::CachableModelConfig;
+use crate::caching::cachable_modelinfer::CachableModelInfer;
+use crate::caching::cachestore::CacheStore;
+use crate::parsing::input::ProcessedInput;
+use crate::parsing::output::ProcessedOutput;
 use crate::service::inference_protocol::{
     CudaSharedMemoryRegisterRequest, CudaSharedMemoryRegisterResponse,
     CudaSharedMemoryStatusRequest, CudaSharedMemoryStatusResponse,
@@ -31,25 +24,36 @@ use crate::service::inference_protocol::{
     SystemSharedMemoryUnregisterResponse, TraceSettingRequest, TraceSettingResponse,
 };
 use crate::settings::Settings;
+use inference_protocol::grpc_inference_service_client::GrpcInferenceServiceClient;
+use inference_protocol::grpc_inference_service_server::GrpcInferenceService;
+use inference_protocol::{
+    ModelInferRequest, ModelInferResponse, ModelMetadataRequest, ModelMetadataResponse,
+    ModelReadyRequest, ModelReadyResponse, ServerLiveRequest, ServerLiveResponse,
+    ServerMetadataRequest, ServerMetadataResponse, ServerReadyRequest, ServerReadyResponse,
+};
+use log::{debug, warn};
 
 pub mod inference_protocol {
     tonic::include_proto!("inference");
 }
 
-pub struct MockGrpcInferenceService {
+pub struct InferenceStoreGrpcInferenceService {
     settings: Settings,
-    inference_service_client: GrpcInferenceServiceClient<Channel>,
-    inference_store: Arc<InferenceStore>,
+    inference_service_client: Option<GrpcInferenceServiceClient<Channel>>,
+    inference_store: Arc<CacheStore<CachableModelInfer>>,
+    config_store: Arc<CacheStore<CachableModelConfig>>,
 }
 
-impl MockGrpcInferenceService {
+impl InferenceStoreGrpcInferenceService {
     pub fn new(
         settings: Settings,
-        inference_store: InferenceStore,
-        inference_service_client: GrpcInferenceServiceClient<Channel>,
+        inference_store: CacheStore<CachableModelInfer>,
+        config_store: CacheStore<CachableModelConfig>,
+        inference_service_client: Option<GrpcInferenceServiceClient<Channel>>,
     ) -> Self {
         Self {
             inference_store: Arc::new(inference_store),
+            config_store: Arc::new(config_store),
             settings,
             inference_service_client,
         }
@@ -57,7 +61,7 @@ impl MockGrpcInferenceService {
 }
 
 #[tonic::async_trait]
-impl GrpcInferenceService for MockGrpcInferenceService {
+impl GrpcInferenceService for InferenceStoreGrpcInferenceService {
     async fn server_live(
         &self,
         _request: Request<ServerLiveRequest>,
@@ -110,15 +114,21 @@ impl GrpcInferenceService for MockGrpcInferenceService {
 
         if let Some(cached_output) = self
             .inference_store
-            .find_output(&parsed_input, Default::default())
+            .find_output(&parsed_input, &self.settings.get_match_config())
             .await
         {
             let response = cached_output.to_response(request.get_ref().clone());
             return Ok(Response::new(response));
         }
 
-        let response = self
-            .inference_service_client
+        // When self.inference_service_client is None, Serve mode is enabled.
+        // In Serve mode only requests from cache will be served.
+        let inference_service_client = match &self.inference_service_client {
+            Some(client) => client,
+            None => return Err(Status::not_found("could not match request")),
+        };
+
+        let response = inference_service_client
             .clone()
             .model_infer(request)
             .await?;
@@ -127,7 +137,7 @@ impl GrpcInferenceService for MockGrpcInferenceService {
 
         if let Err(err) = self
             .inference_store
-            .write(parsed_input, processed_response)
+            .store(parsed_input, processed_response)
             .await
         {
             return Err(Status::unknown(err.to_string()));
@@ -149,6 +159,7 @@ impl GrpcInferenceService for MockGrpcInferenceService {
 
         let inference_service_client = self.inference_service_client.clone();
         let inference_store = self.inference_store.clone();
+        let settings = self.settings.clone();
 
         tokio::spawn(async move {
             while let Some(infer_request) = stream.next().await {
@@ -168,7 +179,7 @@ impl GrpcInferenceService for MockGrpcInferenceService {
                 let parsed_input = ProcessedInput::from_infer_request(infer_request.clone());
 
                 if let Some(cached_output) = inference_store
-                    .find_output(&parsed_input, Default::default())
+                    .find_output(&parsed_input, &settings.get_match_config())
                     .await
                 {
                     debug!("Found input in cache, return the cached output");
@@ -179,6 +190,22 @@ impl GrpcInferenceService for MockGrpcInferenceService {
                     }
                     return;
                 }
+
+                // When self.inference_service_client is None, Serve mode is enabled.
+                // In Serve mode only requests from cache will be served.
+                let inference_service_client = match &inference_service_client {
+                    Some(client) => client,
+                    None => {
+                        if let Err(err) = tx
+                            .send(Err(Status::not_found("could not match request")))
+                            .await
+                        {
+                            warn!("sending inference error response failed: {err}")
+                        }
+
+                        return;
+                    }
+                };
 
                 debug!("Input not found in cache, calling the target grpc server");
 
@@ -209,7 +236,7 @@ impl GrpcInferenceService for MockGrpcInferenceService {
                 debug!("Writing target GRPC server response to disk");
 
                 if let Err(err) = inference_store
-                    .write(parsed_input, processed_response)
+                    .store(parsed_input, processed_response)
                     .await
                 {
                     let _ = tx
@@ -240,13 +267,35 @@ impl GrpcInferenceService for MockGrpcInferenceService {
         &self,
         request: Request<ModelConfigRequest>,
     ) -> Result<Response<ModelConfigResponse>, Status> {
-        match self
-            .inference_service_client
-            .clone()
-            .model_config(request)
+        if let Some(cached_output) = self
+            .config_store
+            .find_output(request.get_ref(), &Default::default())
             .await
         {
-            Ok(res) => Ok(Response::new(res.into_inner())),
+            return Ok(Response::new(cached_output));
+        }
+
+        let inference_service_client = match &self.inference_service_client {
+            Some(client) => client,
+            None => {
+                return Err(Status::unavailable(
+                    "uncached model config not available during serving mode",
+                ))
+            }
+        };
+
+        match inference_service_client
+            .clone()
+            .model_config(request.get_ref().clone())
+            .await
+        {
+            Ok(res) => {
+                self.config_store
+                    .store(request.into_inner(), res.get_ref().clone())
+                    .await
+                    .unwrap();
+                Ok(Response::new(res.get_ref().clone()))
+            }
             Err(err) => Err(Status::unknown(err.to_string())),
         }
     }

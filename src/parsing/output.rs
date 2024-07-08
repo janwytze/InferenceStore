@@ -1,4 +1,4 @@
-use crate::input_parsing::Parameter;
+use crate::parsing::input::Parameter;
 use crate::service::inference_protocol::model_infer_response::InferOutputTensor;
 use crate::service::inference_protocol::{
     InferParameter, ModelInferRequest, ModelInferResponse, ModelStreamInferResponse,
@@ -181,7 +181,7 @@ pub mod tests {
 
     use super::*;
 
-    pub static BASE_OUTPUT: Lazy<ProcessedOutput> = Lazy::new(|| ProcessedOutput {
+    pub static BASE_INFER_OUTPUT: Lazy<ProcessedOutput> = Lazy::new(|| ProcessedOutput {
         parameters: BTreeMap::from([(
             "test".to_string(),
             Some(Parameter::StringParam("test".to_string())),
@@ -200,7 +200,7 @@ pub mod tests {
 
     #[test]
     fn it_converts_output_to_infer_response() {
-        let response = BASE_OUTPUT.clone().to_response(ModelInferRequest {
+        let response = BASE_INFER_OUTPUT.clone().to_response(ModelInferRequest {
             model_name: "test".to_string(),
             model_version: "1".to_string(),
             id: "asdf".to_string(),
@@ -213,5 +213,22 @@ pub mod tests {
         assert_eq!(response.model_name, "test");
         assert_eq!(response.model_version, "1");
         assert_eq!(response.id, "asdf");
+    }
+
+    #[test]
+    fn it_converts_infer_response_to_output() {
+        let response = BASE_INFER_OUTPUT.clone().to_response(ModelInferRequest {
+            model_name: "test".to_string(),
+            model_version: "1".to_string(),
+            id: "asdf".to_string(),
+            parameters: Default::default(),
+            inputs: vec![],
+            outputs: vec![],
+            raw_input_contents: vec![],
+        });
+
+        let output = ProcessedOutput::from_response(&response);
+
+        assert_eq!(output, *BASE_INFER_OUTPUT);
     }
 }
